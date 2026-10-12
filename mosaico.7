@@ -187,6 +187,11 @@ Present only when the certificate came from Let's Encrypt. Run by certbot after
 a renewal, it refreshes the copies under \fI/var/lib/mosaico/secrets/tls\fR and
 restarts the daemon. Removed by \fB--uninstall\fR; the certificate itself is left
 in \fI/etc/letsencrypt\fR, since other services on the host may be using it.
+.TP
+.I ~/.mosaico/ai-manifest
+Present only when the installer was run with \fB--ai\fR, in the home of the user
+who ran it: the list of skill files written for that user's AI assistants. See
+\fBAI ASSISTANTS\fR below.
 .PP
 Dataset frames live either in the local directory recorded as \fBFS_DIR\fR in
 \fIinstall.conf\fR, or in the configured object store bucket.
@@ -215,6 +220,118 @@ The installer pins the image tag rather than letting it track \fIlatest\fR,
 because the generated command line and environment variables belong to one
 mosaicod release. Upgrade by re-running the installer with
 \fB--version\fR, not by pulling a newer image under the same unit.
+.SH AI ASSISTANTS
+When the installer was run with \fB--ai\fR, it also installed Mosaico's skills
+for AI coding assistants, for the user who ran it through \fBsudo\fR: into that
+user's home, never into root's. Only the download runs as root; the archive
+is unpacked and checked, and the files written and removed, by that user,
+through \fBrunuser\fR(1), \fBsudo\fR or \fBsu\fR, so they are owned by
+that user. They come from the \fI.agents/skills/\fR folder of
+\%https://github.com/mosaico-labs/mosaico, at the one commit the installer
+pins by its full sha, downloaded over HTTPS alone (a redirect to plain HTTP is
+refused) and checked against the SHA-256 of their content that the installer
+carries: when the two differ, or when the folder holds anything but
+directories and regular files, nothing is installed. Each
+skill folder is copied as it is into both of the folders below, whichever
+assistants are installed. Nothing else in \fI.agents/\fR is installed. Until
+the skills are released no commit is pinned, and \fB--ai\fR says so and
+installs nothing, the rest of the installation going on.
+.TP
+.I ~/.claude/skills/<name>/
+Read by Claude Code. \%https://code.claude.com/docs/en/skills
+.TP
+.I ~/.agents/skills/<name>/
+The shared user-level skills folder, read by:
+.RS
+.IP \(bu 2
+Codex: \%https://developers.openai.com/codex/skills
+.IP \(bu 2
+GitHub Copilot CLI:
+\%https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-skills
+.IP \(bu 2
+Cursor: \%https://cursor.com/docs/skills
+.IP \(bu 2
+Gemini CLI: \%https://geminicli.com/docs/cli/skills/
+.RE
+.PP
+Antigravity CLI uses a different folder and is not covered.
+.PP
+Every file written is listed, with its SHA-256, in \fI~/.mosaico/ai-manifest\fR.
+Re-running the installer with \fB--ai\fR updates a listed file only while its
+content is still the one recorded, so a file you have edited is kept, with a
+warning, and a file the installer did not write is never touched. A listed file
+that Mosaico no longer ships, because a skill was removed or renamed, is deleted
+on the same condition; an edited one is kept and dropped from the manifest. To
+delete the
+listed files that are still as installed, and then the manifest (a listed path
+outside the two folders above is refused and left in place):
+.RS 4
+.nf
+mosaicoctl --ai --remove
+.fi
+.RE
+.PP
+The skills are written for Mosaico 0.8 or newer, compared on major and minor
+version alone. When the installation is for an older version, the default one
+included, Mosaico is installed as usual and the skills are skipped with a
+warning: add them once you run 0.8 or newer. A version that is not a release
+number, such as \fIlatest\fR or a commit (a short sha made of digits alone
+included), cannot be compared and is accepted with a warning. \fB--version\fR
+is an option that installs Mosaico, so this installs Mosaico 0.8.0 and the
+skills together:
+.RS 4
+.nf
+sudo mosaicoctl --ai --version 0.8.0
+.fi
+.RE
+.PP
+\fB-y\fR is an option that installs Mosaico as well: \fBsudo mosaicoctl -y
+--ai\fR installs Mosaico with its defaults and the skills, which are skipped
+with a warning while the default version is older than 0.8.
+.PP
+Given with no option that installs Mosaico (\fB--dry-run\fR aside),
+\fB--ai\fR installs the skills and nothing else: no daemon, container
+or service is installed or changed, and nothing is asked. To add only the
+skills, or to list the files that would be written without writing any:
+.RS 4
+.nf
+mosaicoctl --ai
+mosaicoctl --ai --dry-run
+.fi
+.RE
+.PP
+\fB--ai\fR needs no \fBsudo\fR: the files go to the home of the user who
+runs it. On a machine where \fBmosaicoctl\fR is not installed:
+.RS 4
+.nf
+curl -fsSL https://get.mosaico.dev | sh -s -- --ai
+.fi
+.RE
+.PP
+The version is then
+checked only when the environment variable \fBMOSAICO_VERSION\fR is set, since
+the skills may be meant for a Mosaico running on another machine, and an older
+one is refused; without it, a note says that the skills are written for
+Mosaico 0.8 or newer (the main branch). \fBMOSAICO_VERSION\fR does not by
+itself install Mosaico. \fBsudo\fR drops it from the caller's environment, so
+under \fBsudo\fR give it after \fBsudo\fR; without \fBsudo\fR:
+.RS 4
+.nf
+MOSAICO_VERSION=0.8.0 mosaicoctl --ai
+.fi
+.RE
+.PP
+A download, an unpack or a check that
+fails then makes it exit with status 1; skills not released yet, or a run as
+root with no \fBSUDO_USER\fR, end with 0 and a note.
+.PP
+\fB--dry-run\fR together with \fB--ai\fR lists the two folders and every file
+that would be written, and writes none of them. \fB--ai\fR cannot be combined
+with \fB--uninstall\fR, which leaves the skills in place.
+.PP
+For testing, the environment variable \fBMOSAICO_AI_SOURCE\fR names a local
+folder holding a \fIskills/\fR folder to install from instead of the download;
+its content is not checked against the pinned SHA-256, and a warning says so.
 .SH UNINSTALLING
 To stop and remove the services, their Quadlet units (see \fBQUADLET\fR below),
 the two commands and this man page, leaving all stored data in place:
@@ -238,6 +355,11 @@ sudo podman volume rm mosaico-postgres-data
 The exact commands, with the storage directory filled in, are printed by
 \fBmosaicoctl --uninstall\fR when it finishes. Data kept in an external
 object store, or in an external PostgreSQL instance, must be removed there.
+.PP
+Skills installed with \fB--ai\fR are left in place as well, since
+they are of use without a local daemon. Remove them first, while
+\fBmosaicoctl\fR is still there, with \fBmosaicoctl --ai --remove\fR (see
+\fBAI ASSISTANTS\fR).
 .SH QUADLET
 \fBmosaicod.service\fR and \fBmosaico-postgres.service\fR are not hand-written
 systemd units: systemd generates them at boot, through Podman Quadlet, from the

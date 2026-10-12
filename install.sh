@@ -219,6 +219,51 @@ set -e
 # package is installed too, since their python3 ships without ensurepip.
 # Activate it with `. /opt/mosaico/bin/activate`. Default: not installed.
 #
+# --ai
+# Installs Mosaico's skills for AI coding assistants into two folders of your
+# home, always both: ~/.claude/skills, read by Claude Code, and ~/.agents/skills,
+# the shared folder read by Codex, GitHub Copilot, Cursor and Gemini CLI. They
+# come from the .agents/skills folder of https://github.com/mosaico-labs/mosaico,
+# at the one commit this installer pins (AI_SKILLS_REF), downloaded over HTTPS
+# and checked against the hash of their content (AI_SKILLS_SHA256): on a
+# mismatch nothing is installed, nor when the skills folder holds anything but
+# directories and regular files. Until the skills are released no commit is
+# pinned, and --ai says so and installs nothing, the rest of the installation
+# going on. They are written for Mosaico 0.8 or newer (AI_MIN_MOSAICO_VERSION):
+# for an older version they are skipped with a warning, the rest of the
+# installation going on (--ai alone refuses it when MOSAICO_VERSION is set),
+# and a version that is not a release number (latest, a commit sha, even one of
+# digits alone) is let through with a warning. They are copied as they are.
+# Under sudo they go into the home of $SUDO_USER, and only the download runs as
+# root: the archive is unpacked, checked and copied by that user. As plain root,
+# with no such user, the step is skipped with a warning. Every file written is
+# recorded with its hash in ~/.mosaico/ai-manifest: a re-run updates them and
+# deletes those Mosaico no longer ships, but leaves alone, with a warning, any
+# file changed since, and any it did not write. The vendor documentation behind
+# each folder: man mosaico. Default: not installed.
+#
+# --ai alone
+# Given with no option that installs Mosaico (--dry-run aside; --version and -y
+# are such options, so --ai --version 0.8.0 installs Mosaico 0.8.0 and the
+# skills, and -y --ai Mosaico with its defaults and the skills), --ai installs
+# the skills and nothing else: no daemon, no Podman, no prompt, so they can be
+# added for a Mosaico that is already installed, or that runs on another
+# machine. It needs no sudo, since the files go to the home of the user who
+# runs it: curl -fsSL https://get.mosaico.dev | sh -s -- --ai, or mosaicoctl
+# --ai where Mosaico is installed. The version check above applies only when
+# MOSAICO_VERSION is set in the environment:
+# curl -fsSL https://get.mosaico.dev | MOSAICO_VERSION=0.8.0 sh -s -- --ai
+# (under sudo, give it after sudo, whose env_reset drops it otherwise). Otherwise a
+# note says what the skills are for. A download, an unpack or a check that fails
+# makes it exit 1, where a full installation only warns; skills not released yet
+# exit 0.
+#
+# --ai --remove
+# Deletes the files listed in ~/.mosaico/ai-manifest whose content is still the
+# one installed, then the manifest, and does nothing else: Mosaico itself is
+# removed with --uninstall, which in turn leaves these files alone: the two are
+# separate runs, and --ai together with --uninstall is refused.
+#
 # --cleanup-retention <DURATION>
 # How long obsolete files are kept before being deleted, for example 7d, 14d or
 # 30d. Becomes --retention-duration on the cleanup container. When omitted, that
@@ -244,7 +289,7 @@ set -e
 # pulling the image, so both are taken on trust and not checked at all. Any other
 # tag is refused, a branch name being the case in point: it says nothing about the
 # release behind it and moves under the installation.
-# See DEFAULT_MOSAICO_VERSION and MIN_MOSAICO_VERSION.# See DEFAULT_MOSAICO_VERSION and MIN_MOSAICO_VERSION.
+# See DEFAULT_MOSAICO_VERSION and MIN_MOSAICO_VERSION.
 #
 # --uninstall
 # Stops and removes the Mosaico services, the installed binaries and the man
@@ -264,7 +309,15 @@ set -e
 # Same as --yes above. Set to 1 to skip every prompt.
 #
 # MOSAICO_VERSION
-# Same as --version above.
+# Sets the version like --version above, but does not by itself install Mosaico:
+# with --ai alone, it is the version the skills are checked against. --ai
+# needs no sudo; under sudo, give it after sudo, whose env_reset drops it
+# otherwise: curl -fsSL https://get.mosaico.dev | MOSAICO_VERSION=0.8.0 sh -s -- --ai.
+#
+# MOSAICO_AI_SOURCE
+# A local .agents folder, holding skills/, for --ai to install from
+# instead of downloading the repository archive. Meant for testing: it is
+# not checked against AI_SKILLS_SHA256, with a warning.
 #
 # ==============================================================================
 
@@ -290,6 +343,11 @@ RENEWAL_HOOK="$RENEWAL_HOOK_DIR/mosaico.sh"
 # write_secrets, never independently. `latest` is still 0.5.x, which has no
 # `server` and no `cleanup` subcommand.
 DEFAULT_MOSAICO_VERSION="0.6.0-rc"
+# Set when a version was asked for, by --version or MOSAICO_VERSION: --ai alone,
+# which only MOSAICO_VERSION can set it for, checks the skills against it only
+# then. See ai_check_version.
+MOSAICO_VERSION_SET=0
+[ -z "${MOSAICO_VERSION:-}" ] || MOSAICO_VERSION_SET=1
 MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
 # The oldest release this installer can set up, checked against --version. Kept
 # apart from DEFAULT_MOSAICO_VERSION on purpose: the default moves with every
@@ -484,6 +542,14 @@ CLEANUP=1;                    CLEANUP_SET=0
 CLEANUP_RETENTION="";         CLEANUP_RETENTION_SET=0
 CLEANUP_INTERVAL="";          CLEANUP_INTERVAL_SET=0
 SDK=0;                        SDK_SET=0
+AI=0;                         AI_SET=0
+AI_REMOVE=0
+# Set by parse_args: --ai with no option that installs Mosaico (MOSAICO_ARGS),
+# so the skills are installed and nothing else. See do_ai_only.
+AI_ONLY=0
+MOSAICO_ARGS=0
+# Set by install_ai: print_success only reports files that were written.
+AI_INSTALLED=0
 
 usage() {
 	cat <<-EOF
@@ -566,6 +632,19 @@ usage() {
 	                                  virtual environment at $SDK_VENV
 	                                  (default: not installed)
 
+	AI assistant options:
+	      --ai                        Install Mosaico's skills for AI coding
+	                                  assistants into ~/.claude/skills and
+	                                  ~/.agents/skills (default: not installed).
+	                                  Written for Mosaico $AI_MIN_MOSAICO_VERSION or newer:
+	                                  skipped, with a warning, for an older version
+	      --ai alone                  With no option that installs Mosaico
+	                                  (--dry-run aside; -y and --version are
+	                                  such options), the skills alone: no
+	                                  daemon is installed or changed. Checked
+	                                  against MOSAICO_VERSION only when it is set
+	      --ai --remove               Remove them, keeping the files you edited
+
 	Paired options: with -y all of a group must be given, interactively the
 	missing ones are asked for:
 	      --postgres external  ->  --pg-host, --pg-password
@@ -575,7 +654,14 @@ usage() {
 
 	Environment variables:
 	  NON_INTERACTIVE   Same as --yes
-	  MOSAICO_VERSION   Same as --version
+	  MOSAICO_VERSION   Sets the version like --version, but does not install
+	                    Mosaico by itself: with --ai alone, the version the
+	                    skills are checked against. --ai needs no
+	                    sudo, which would drop it:
+	                    curl -fsSL https://get.mosaico.dev |
+	                    MOSAICO_VERSION=$AI_MIN_MOSAICO_VERSION sh -s -- --ai
+	  MOSAICO_AI_SOURCE Local .agents folder for --ai, instead of the download
+	                    (testing only: not checked against the pinned hash)
 
 	Documentation: $DOCS_URL
 	Installed commands and uninstall: man mosaico
@@ -614,13 +700,22 @@ normalize_backend() {
 # Values may be passed either as `--flag value` or as `--flag=value`.
 parse_args() {
 	while [ $# -gt 0 ]; do
+		# Any option but these asks for Mosaico to be installed (or uninstalled),
+		# --version and -y included: -y --ai installs Mosaico with its defaults
+		# and the skills. A value is shifted away below, so only option names are
+		# seen here.
+		case "$1" in
+			--ai|--install-ai|--ai=*|--install-ai=*|--no-ai|--remove) ;;
+			--dry-run|-h|--help) ;;
+			*) MOSAICO_ARGS=1 ;;
+		esac
 		case "$1" in
 			--uninstall) UNINSTALL=1 ;;
 			--dry-run) DRY_RUN=1 ;;
 			-y|--yes) NON_INTERACTIVE=1 ;;
 
-			--version) require_value "$@"; MOSAICO_VERSION="${2#v}"; shift ;;
-			--version=*) MOSAICO_VERSION="${1#*=}"; MOSAICO_VERSION="${MOSAICO_VERSION#v}" ;;
+			--version) require_value "$@"; MOSAICO_VERSION="${2#v}"; MOSAICO_VERSION_SET=1; shift ;;
+			--version=*) MOSAICO_VERSION="${1#*=}"; MOSAICO_VERSION="${MOSAICO_VERSION#v}"; MOSAICO_VERSION_SET=1 ;;
 
 			# --port is mosaicod's, not the database's: that one is --pg-port.
 			--port|--mosaicod-port)
@@ -714,6 +809,13 @@ parse_args() {
 			--sdk=*|--install-sdk=*) SDK="$(to_bool "${1#*=}")"; SDK_SET=1 ;;
 			--no-sdk) SDK=0; SDK_SET=1 ;;
 
+			--ai|--install-ai) AI=1; AI_SET=1 ;;
+			--ai=*|--install-ai=*) AI="$(to_bool "${1#*=}")"; AI_SET=1 ;;
+			--no-ai) AI=0; AI_SET=1 ;;
+
+			# Only meaningful with --ai: Mosaico itself is removed with --uninstall.
+			--remove) AI_REMOVE=1 ;;
+
 			--cleanup-retention) require_value "$@"; CLEANUP_RETENTION="$2"; CLEANUP_RETENTION_SET=1; shift ;;
 			--cleanup-retention=*) CLEANUP_RETENTION="${1#*=}"; CLEANUP_RETENTION_SET=1 ;;
 
@@ -734,6 +836,10 @@ parse_args() {
 		esac
 		shift
 	done
+
+	if [ "$AI" -eq 1 ] && [ "$AI_REMOVE" -eq 0 ] && [ "$MOSAICO_ARGS" -eq 0 ]; then
+		AI_ONLY=1
+	fi
 }
 
 # --- Option pairing ---
@@ -975,7 +1081,19 @@ check_min_version() {
 # Rejects a malformed value as soon as it is seen, so the user is not walked
 # through a whole questionnaire before learning that a flag was wrong.
 validate_flags() {
-	check_min_version
+	# A MOSAICO_VERSION set for --ai alone names the daemon the skills are for,
+	# not an image to pull: only the skills' own check applies to it.
+	[ "$AI_ONLY" -eq 1 ] || check_min_version
+	[ "$AI" -eq 0 ] || [ "$AI_REMOVE" -eq 1 ] || [ "$UNINSTALL" -eq 0 ] || \
+		fatal "--ai and --uninstall are separate runs: --uninstall leaves the skills in place, and --ai --remove removes them."
+	ai_check_version
+
+	if [ "$AI_REMOVE" -eq 1 ]; then
+		[ "$AI" -eq 1 ] || \
+			fatal "--remove only applies to --ai: pass --ai --remove to remove the Mosaico skills, or --uninstall to remove Mosaico."
+		[ "$UNINSTALL" -eq 0 ] || \
+			fatal "--ai --remove and --uninstall are separate runs: pass one, then the other."
+	fi
 
 	is_valid_pg_mode "$PG_MODE" || \
 		fatal "invalid --postgres '$PG_MODE' (expected 'embedded' or 'external')."
@@ -1212,11 +1330,11 @@ section() {
 configure_interactive() {
 	info "Interactive configuration started. Press Enter to accept [default values]."
 
-	# --- [1/6] Database ---
+	# --- [1/7] Database ---
 	#
 	# Defaulted to the embedded container, so that pressing Enter through the
 	# questionnaire gives a working database with nothing provisioned beforehand.
-	section "[1/6] PostgreSQL Database"
+	section "[1/7] PostgreSQL Database"
 	if [ "$PG_MODE_SET" -eq 0 ]; then
 		tty_print "${BOLD}?${RESET} Choose how mosaicod reaches PostgreSQL:"
 		tty_print "  ${BRAND}>${RESET} [1] Install an embedded PostgreSQL container (nothing needed beforehand)"
@@ -1249,8 +1367,8 @@ configure_interactive() {
 		[ "$PG_PASSWORD_SET" -eq 1 ] || PG_PASSWORD="$(ask_secret "Database password")"
 	fi
 
-	# --- [2/6] Storage ---
-	section "[2/6] Storage Configuration"
+	# --- [2/7] Storage ---
+	section "[2/7] Storage Configuration"
 	if [ "$STORE_BACKEND_SET" -eq 0 ]; then
 		tty_print "${BOLD}?${RESET} Choose storage backend:"
 		tty_print "  ${BRAND}>${RESET} [1] Local Filesystem (fs)"
@@ -1283,11 +1401,11 @@ configure_interactive() {
 		[ "$OBJ_SECRET_KEY_SET" -eq 1 ] || OBJ_SECRET_KEY="$(ask_secret "Secret Key")"
 	fi
 
-	# --- [3/6] Network, TLS & domain ---
+	# --- [3/7] Network, TLS & domain ---
 	#
 	# The port is asked before TLS because it is the answer that always applies,
 	# whereas the certificate questions only follow from enabling TLS.
-	section "[3/6] Network, TLS & Domain Setup"
+	section "[3/7] Network, TLS & Domain Setup"
 	if [ "$MOSAICOD_PORT_SET" -eq 0 ]; then
 		echo "  mosaicod serves gRPC on this port, published on the host by Podman."
 		echo "  Clients, the SDK and the published examples all assume $DEFAULT_MOSAICOD_PORT."
@@ -1346,11 +1464,11 @@ configure_interactive() {
 		fi
 	fi
 
-	# --- [4/6] Security ---
+	# --- [4/7] Security ---
 	#
 	# The suggested answer is yes, where -y defaults to no: a client needs a key to
 	# talk to a daemon that enforces them.
-	section "[4/6] Security & API Keys"
+	section "[4/7] Security & API Keys"
 	if [ "$API_KEY_SET" -eq 0 ]; then
 		if ask_yn "Do you want to generate an initial Master API Key for clients?" "y"; then
 			API_KEY=1
@@ -1359,11 +1477,11 @@ configure_interactive() {
 		fi
 	fi
 
-	# --- [5/6] Retention ---
+	# --- [5/7] Retention ---
 	#
 	# Cleanup is on unless the user says otherwise, so the first prompt is the
 	# opt-out and the values are only asked for once it is kept.
-	section "[5/6] Data Retention & Cleanup"
+	section "[5/7] Data Retention & Cleanup"
 	if [ "$CLEANUP_SET" -eq 0 ]; then
 		echo "  The cleanup routine prunes obsolete dataset frames and runs by default,"
 		echo "  with mosaicod's own settings, documented at:"
@@ -1392,8 +1510,8 @@ configure_interactive() {
 			"Use a number followed by h, d, w or m (e.g. 7d).")"
 	fi
 
-	# --- [6/6] Python SDK ---
-	section "[6/6] Python SDK"
+	# --- [6/7] Python SDK ---
+	section "[6/7] Python SDK"
 	if [ "$SDK_SET" -eq 0 ]; then
 		echo "  The Python SDK ($SDK_PACKAGE) is installed into a virtual environment"
 		echo "  at $SDK_VENV, leaving the system interpreter untouched."
@@ -1402,6 +1520,31 @@ configure_interactive() {
 		else
 			SDK=0
 		fi
+	fi
+
+	# --- [7/7] AI coding assistants ---
+	section "[7/7] AI Coding Assistants"
+	if [ "$AI_SET" -eq 0 ]; then
+		if ! ai_released; then
+			echo "  Mosaico's skills for AI coding assistants are not released yet."
+			AI=0
+		elif ! ai_version_supported; then
+			echo "  Mosaico's skills for AI coding assistants are written for Mosaico"
+			echo "  $AI_MIN_MOSAICO_VERSION or newer: not offered for $MOSAICO_VERSION."
+			AI=0
+		else
+			echo "  Mosaico's skills can be added to ~/.claude/skills (Claude Code) and to"
+			echo "  ~/.agents/skills (Codex, GitHub Copilot, Cursor, Gemini CLI)."
+			echo "  A file you edit afterwards is never overwritten."
+			if ask_yn "Install Mosaico skills for your AI coding assistants?" "n"; then
+				AI=1
+			else
+				AI=0
+			fi
+		fi
+	elif [ "$AI" -eq 1 ] && ai_released && ! ai_version_supported; then
+		echo "  Mosaico's skills for AI coding assistants are written for Mosaico"
+		echo "  $AI_MIN_MOSAICO_VERSION or newer: --ai is skipped for $MOSAICO_VERSION."
 	fi
 }
 
@@ -1493,6 +1636,15 @@ print_summary() {
 		echo "  - Python SDK      : $SDK_PACKAGE in a venv at $SDK_VENV"
 	else
 		echo "  - Python SDK      : Not installed"
+	fi
+	if [ "$AI" -eq 1 ] && ! ai_released; then
+		echo "  - AI Skills       : Not released yet: none are installed"
+	elif [ "$AI" -eq 1 ] && ! ai_version_supported; then
+		echo "  - AI Skills       : Skipped: written for Mosaico $AI_MIN_MOSAICO_VERSION or newer"
+	elif [ "$AI" -eq 1 ]; then
+		echo "  - AI Skills       : ~/.claude/skills and ~/.agents/skills"
+	else
+		echo "  - AI Skills       : Not installed"
 	fi
 	echo "  - Image Version   : $MOSAICO_VERSION"
 	echo
@@ -2551,6 +2703,742 @@ print_logo() {
 	echo "  ${BRAND}${ARROW}${RESET}  System detected: ${BRAND}${BOLD}Linux${RESET}"
 }
 
+# --- AI coding assistant skills (--ai) ---
+#
+# Mosaico publishes skills for AI coding assistants in the .agents/skills/ folder
+# of its main repository, one folder per skill holding a SKILL.md and any file next
+# to it. --ai copies each of them, as it is, into two folders of the home of the
+# user who ran the installer, always both: ~/.claude/skills, which Claude Code
+# reads, and ~/.agents/skills, the shared folder Codex, GitHub Copilot, Cursor and
+# Gemini CLI read. The documentation behind each is cited in mosaico.7. Anything
+# else in .agents/, the agents folder included, is ignored.
+#
+# They go into a user's home, never root's: under sudo that is $SUDO_USER. A plain
+# root login has no such user, so the step is skipped there with a warning. Only
+# the download runs as root. Unpacking and checking the archive, and writing and
+# removing files, are left to that user (runuser, sudo -u or su, whichever the
+# host has), the last three to a small script. So root never unpacks an archive
+# it has not checked, the files are the user's own, and nothing in that home, a
+# symlink or a line planted in the manifest, can make root write or delete
+# anything: the user can only do to the home what they could do anyway.
+#
+# Every file written is recorded with its sha256 in ~/.mosaico/ai-manifest. A
+# re-run replaces a file only while its content is still the one recorded there,
+# so an edit made by the user survives with a warning, and a file this installer
+# did not write is never touched. On the same condition a re-run deletes the
+# recorded files Mosaico no longer ships, and --ai --remove deletes all of them,
+# then the manifest; both only inside those two folders.
+
+AI_REPO_URL="https://github.com/mosaico-labs/mosaico"
+# The skills come from one commit of that repository, pinned by its full sha (40
+# lowercase hex characters) and never by a branch or a tag, which can move, and
+# are checked against the hash of their content before anything is written. Of
+# the content and not of the archive: GitHub generates those on the fly and does
+# not promise the same bytes twice. While AI_SKILLS_REF is empty the skills are
+# not released, and --ai installs nothing; set without a 64-character
+# AI_SKILLS_SHA256 next to it, --ai refuses to install anything.
+#
+# The two change together. For a new ref, compute the hash on the archive GitHub
+# serves for that commit, the one the installer downloads, never on a checkout:
+# untracked files (.DS_Store, editor swap files), line endings rewritten by
+# core.autocrlf, Git LFS pointers and export-ignore all make a working tree
+# differ from it. In an empty directory, with <sha> the full commit sha:
+#
+#   curl -fsSL https://github.com/mosaico-labs/mosaico/archive/<sha>.tar.gz |
+#       tar -xzf - mosaico-<sha>/.agents/skills &&
+#   cd mosaico-<sha>/.agents && find skills -type f | LC_ALL=C sort |
+#       while IFS= read -r f; do
+#           printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "$f"
+#       done | sha256sum | cut -d' ' -f1
+#
+# with `shasum -a 256` in place of both sha256sum where there is none, as on
+# macOS. That is ai_verify in the worker: one "<sha256>  <path>" line for every
+# regular file under skills/, its path relative to .agents/, the lines sorted
+# bytewise, and the sha256 of that list. A skills folder holding anything but
+# directories and regular files, or a name with a newline in it, is refused
+# before that, so the list is always well defined.
+AI_SKILLS_REF=""
+AI_SKILLS_SHA256=""
+# The oldest Mosaico the skills are written for, compared on major and minor
+# alone: they describe the main branch after mosaico-labs/mosaico#817, which no
+# release before 0.8 has.
+AI_MIN_MOSAICO_VERSION="0.8.0"
+# Set by ai_resolve_user, ai_fetch_bundle and ai_download.
+AI_USER=""
+AI_HOME=""
+AI_MANIFEST=""
+AI_SOURCE_DIR=""
+AI_SOURCE_LABEL=""
+AI_SOURCE_SHA256=""
+AI_REFUSAL=""
+AI_TMP=""
+
+# The user the files belong to, and that user's home as the password database has
+# it rather than $HOME, which sudo may or may not have reset to root's. AI_USER
+# stays empty for a root login with no SUDO_USER.
+ai_resolve_user() {
+	AI_USER=""
+	AI_HOME=""
+	if [ "$(id -u)" -ne 0 ]; then
+		AI_USER="$(id -un)"
+	elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+		AI_USER="$SUDO_USER"
+	else
+		return 1
+	fi
+	if command_exists getent; then
+		AI_HOME="$(getent passwd "$AI_USER" 2>/dev/null | cut -d: -f6)"
+	fi
+	if [ -z "$AI_HOME" ]; then
+		AI_HOME="$(awk -F: -v u="$AI_USER" '$1 == u { print $6; exit }' /etc/passwd 2>/dev/null || true)"
+	fi
+	[ -n "$AI_HOME" ] && [ -d "$AI_HOME" ] || return 1
+	AI_MANIFEST="$AI_HOME/.mosaico/ai-manifest"
+}
+
+# Whether there are skills to install: a pinned commit, or a local source.
+ai_released() {
+	[ -n "$AI_SKILLS_REF" ] || [ -n "${MOSAICO_AI_SOURCE:-}" ]
+}
+
+# The major and minor of a version, as version_major_minor gives them, for the
+# skills' check alone, which reads two kinds of value differently: one of digits
+# alone, 7 or more of them, is a short commit sha (is_commit_sha) rather than a
+# major, and a number of 10 digits or more does not fit the shell's arithmetic.
+# Nothing for both, as for any value that is not a release number.
+ai_version_mm() {
+	case "${1#v}" in
+		*.*) ;;
+		*) if is_commit_sha "$1"; then return 0; fi ;;
+	esac
+	_mm="$(version_major_minor "$1")"
+	case "${_mm% *}/${_mm#* }" in
+		??????????*/*|*/??????????*) return 0 ;;
+	esac
+	echo "$_mm"
+}
+
+# True when MOSAICO_VERSION is AI_MIN_MOSAICO_VERSION or newer, by major and minor,
+# or is not a release number at all (latest, a commit sha), which cannot be
+# compared: ai_check_version warns about that one.
+ai_version_supported() {
+	_av="$(ai_version_mm "$MOSAICO_VERSION")"
+	[ -n "$_av" ] || return 0
+	_amin="$(version_major_minor "$AI_MIN_MOSAICO_VERSION")"
+	if [ "${_av% *}" -ne "${_amin% *}" ]; then
+		[ "${_av% *}" -gt "${_amin% *}" ]
+	else
+		[ "${_av#* }" -ge "${_amin#* }" ]
+	fi
+}
+
+# Refuses --ai alone, before anything is installed, for a Mosaico older than the
+# skills. Checked only when MOSAICO_VERSION is set, since the daemon may run on
+# another machine. A full installation is not refused: install_ai skips the
+# skills with a warning, and the rest of it goes on. Not applied while there are
+# no skills.
+ai_check_version() {
+	[ "$AI" -eq 1 ] && [ "$AI_REMOVE" -eq 0 ] && ai_released || return 0
+	[ "$AI_ONLY" -eq 0 ] || [ "$MOSAICO_VERSION_SET" -eq 1 ] || return 0
+	if [ -z "$(ai_version_mm "$MOSAICO_VERSION")" ]; then
+		warn "'$MOSAICO_VERSION' is not a release number, so it cannot be checked against Mosaico $AI_MIN_MOSAICO_VERSION, the oldest the skills are written for: they may describe commands it does not have."
+	elif [ "$AI_ONLY" -eq 1 ] && ! ai_version_supported; then
+		fatal "--ai: Mosaico's skills are written for Mosaico $AI_MIN_MOSAICO_VERSION or newer, and MOSAICO_VERSION is $MOSAICO_VERSION: they would describe commands and options it does not have.
+    Once you run $AI_MIN_MOSAICO_VERSION or newer, give that version, without sudo (which drops it, and --ai does not need): curl -fsSL https://get.mosaico.dev | MOSAICO_VERSION=$AI_MIN_MOSAICO_VERSION sh -s -- --ai. Or leave MOSAICO_VERSION out to skip the check."
+	fi
+}
+
+# ai_is_hex <value> <length>: whether <value> is <length> lowercase hex digits.
+ai_is_hex() {
+	case "$1" in
+		*[!0-9a-f]*) return 1 ;;
+	esac
+	[ "${#1}" -eq "$2" ]
+}
+
+# ai_download <url> <file>: over HTTPS alone, TLS 1.2 or newer, redirects included
+# (GitHub sends archives on to codeload.github.com). wget's --https-only does not
+# cover redirects, so with wget the response headers are read back and a download
+# that went through a plain-HTTP Location is thrown away, refused (status 3).
+ai_download() {
+	if command_exists curl; then
+		curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL -o "$2" "$1" 2>> "$LOG_FILE" || return 1
+	elif command_exists wget; then
+		_wrc=0
+		wget --https-only --secure-protocol=TLSv1_2 -S -q -O "$2" "$1" 2> "$2.headers" || _wrc=$?
+		cat "$2.headers" >> "$LOG_FILE" 2>/dev/null || true
+		[ "$_wrc" -eq 0 ] || return 1
+		if grep -Eiq '^[[:space:]]*location:[[:space:]]*http:' "$2.headers"; then
+			rm -f "$2"
+			AI_REFUSAL="the download of $1 was redirected to plain HTTP."
+			return 3
+		fi
+	else
+		return 1
+	fi
+}
+
+# Points AI_SOURCE_DIR at a folder holding the skills/ to install: .agents/ in the
+# repository archive of commit AI_SKILLS_REF, of which only .agents/skills/ is
+# extracted, or a copy of MOSAICO_AI_SOURCE/skills/ when that is set. Done on a dry
+# run as well, into a temporary directory, since the files it would write cannot
+# be listed otherwise. Only the download runs as root: the archive is unpacked,
+# and MOSAICO_AI_SOURCE copied, by AI_USER into a folder of AI_TMP that user owns,
+# so root never creates a device node or a setuid file from an archive it has not
+# checked, nor reads a path the user picked. ai_verify, in the worker, then refuses
+# anything there but directories and regular files and computes the content hash,
+# in AI_SOURCE_SHA256. Returns 1 when the source could not be reached or read, 2
+# when it holds no skills folder, 3 when it is refused, with the reason in
+# AI_REFUSAL: a pin that is not a full sha and a sha256, a redirect to plain HTTP,
+# an archive that does not unpack cleanly, an entry that is not a directory or a
+# regular file, or content that is not the pinned one; 4 when the downloaded
+# archive cannot be read at all, being damaged or cut short; 5 when the check
+# itself could not run. MOSAICO_AI_SOURCE stands in for the pinned commit in
+# tests, so it is not checked against the hash, with a warning.
+ai_fetch_bundle() {
+	AI_REFUSAL=""
+	AI_SOURCE_SHA256=""
+	if [ -n "${MOSAICO_AI_SOURCE:-}" ]; then
+		AI_SOURCE_LABEL="$MOSAICO_AI_SOURCE (MOSAICO_AI_SOURCE)"
+	else
+		AI_SOURCE_LABEL="$AI_REPO_URL, commit $AI_SKILLS_REF"
+		if ! ai_is_hex "$AI_SKILLS_REF" 40 || ! ai_is_hex "$AI_SKILLS_SHA256" 64; then
+			AI_REFUSAL="this installer pins the skills to commit '$AI_SKILLS_REF' with content hash '$AI_SKILLS_SHA256', where a full commit sha (40 lowercase hex characters) and a sha256 (64) are needed, so it cannot check them."
+			return 3
+		fi
+	fi
+	ai_make_tmp || return 1
+	mkdir "$AI_TMP/src" || return 1
+	if [ "$(id -u)" -eq 0 ]; then
+		chown "$AI_USER" "$AI_TMP/src" 2>> "$LOG_FILE" || return 1
+	fi
+	if [ -n "${MOSAICO_AI_SOURCE:-}" ]; then
+		AI_SOURCE_DIR="$AI_TMP/src"
+		ai_as_user test -d "$MOSAICO_AI_SOURCE/skills" 2>> "$LOG_FILE" || return 2
+		ai_as_user cp -R "$MOSAICO_AI_SOURCE/skills" "$AI_SOURCE_DIR/" 2>> "$LOG_FILE" || return 1
+	else
+		_tgz="$AI_TMP/mosaico.tar.gz"
+		_frc=0
+		ai_download "$AI_REPO_URL/archive/$AI_SKILLS_REF.tar.gz" "$_tgz" || _frc=$?
+		[ "$_frc" -eq 0 ] || return "$_frc"
+		chmod 644 "$_tgz" || return 1
+		# GitHub names the archive's single top-level directory after the
+		# repository and the full commit sha. Nothing else is extracted.
+		_top="mosaico-$AI_SKILLS_REF"
+		AI_SOURCE_DIR="$AI_TMP/src/$_top/.agents"
+		if ! ai_as_user tar --no-same-owner -xzf "$_tgz" -C "$AI_TMP/src" "$_top/.agents/skills" 2>> "$LOG_FILE"; then
+			# A damaged archive fails here as well: only one that can be listed
+			# is known to lack the folder.
+			ai_as_user tar -tzf "$_tgz" > /dev/null 2>> "$LOG_FILE" || return 4
+			ai_as_user test -d "$AI_SOURCE_DIR/skills" 2>> "$LOG_FILE" || return 2
+			AI_REFUSAL="the archive of $AI_SOURCE_LABEL could not be unpacked cleanly (see $LOG_FILE)."
+			return 3
+		fi
+	fi
+	_frc=0
+	AI_SOURCE_SHA256="$(ai_run_worker verify)" || _frc=$?
+	case "$_frc" in
+		10) ;;
+		11)
+			AI_SOURCE_SHA256=""
+			AI_REFUSAL="the skills from $AI_SOURCE_LABEL could not be checked (see the warning above)."
+			return 3
+			;;
+		*) return 5 ;;
+	esac
+	if [ -n "${MOSAICO_AI_SOURCE:-}" ]; then
+		warn "MOSAICO_AI_SOURCE is set: its skills are not checked against AI_SKILLS_SHA256 (their content hash is $AI_SOURCE_SHA256)."
+		return 0
+	fi
+	if [ -z "$AI_SOURCE_SHA256" ] || [ "$AI_SOURCE_SHA256" != "$AI_SKILLS_SHA256" ]; then
+		AI_REFUSAL="the skills downloaded from $AI_SOURCE_LABEL are not the ones this installer pins: their content hash is ${AI_SOURCE_SHA256:-empty}, not $AI_SKILLS_SHA256."
+		return 3
+	fi
+}
+
+# Always under /tmp, never under $TMPDIR: with libpam-tmpdir, sudo points that at
+# /tmp/user/0, which the user the worker runs as cannot enter. Mode 711: that user
+# gets through it to the files it is handed by name, and can list or change none.
+ai_make_tmp() {
+	AI_TMP="$(mktemp -d /tmp/mosaico-ai.XXXXXX)" && chmod 711 "$AI_TMP"
+}
+
+ai_cleanup_tmp() {
+	[ -z "$AI_TMP" ] || rm -rf "$AI_TMP"
+	AI_TMP=""
+}
+
+# Single-quotes a value for the parameter file the worker sources.
+ai_quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# The script that writes and removes the files, run by ai_run_worker as the user
+# they belong to. Quoted heredoc: written verbatim, its variables resolved when it
+# runs, from the parameter file next to it.
+ai_write_worker() {
+	cat <<-'AI_WORKER_EOF'
+	#!/bin/sh
+	# Written by the Mosaico installer into a temporary directory and run by it, as
+	# the user whose home it writes to: under sudo through runuser, sudo -u or su,
+	# never as root. No set -e: a file that cannot be written is reported and the
+	# next one is tried. Exit status, kept clear of the 1 that runuser, sudo or su
+	# return when they refuse to run it: 10 done, 11 some files failed, or for
+	# verify the skills refused; for an install, 2 is added when no file is in
+	# place afterwards; 14 not started.
+	cd / || exit 14
+	. "$(dirname "$0")/ai-params.sh" || exit 14
+
+	AI_FAILED=0
+	AI_MANAGED=0
+
+	warn() { printf "${YELLOW}Warning:${RESET} %s\n" "$*" >&2; }
+
+	is_dry_run() {
+	    [ -n "$AI_DRY_RUN" ]
+	}
+
+	# sha256 of standard input, in hex. Files are read this way: given a name
+	# holding a backslash, sha256sum would print it escaped, a \ before the hash.
+	ai_hash_stdin() {
+	    if command -v sha256sum > /dev/null 2>&1; then
+	        sha256sum | cut -d' ' -f1
+	    else
+	        shasum -a 256 | cut -d' ' -f1
+	    fi
+	}
+
+	ai_hash() {
+	    ai_hash_stdin < "$1"
+	}
+
+	ai_mkdir() {
+	    [ -d "$1" ] && return 0
+	    ai_mkdir "$(dirname "$1")" || return 1
+	    mkdir "$1" 2> /dev/null
+	}
+
+	# One "<sha256>  <path>" line per file. The path is matched through the
+	# environment rather than awk -v, which would expand backslashes in it.
+	ai_manifest_hash() {
+	    [ -f "$AI_MANIFEST" ] || return 0
+	    AI_P="$1" awk '{ h = $1; sub(/^[^ ]*  /, ""); if ($0 == ENVIRON["AI_P"]) { print h; exit } }' "$AI_MANIFEST"
+	}
+
+	# ai_manifest_set <path> [hash]: drops the line of <path>, then records <hash>
+	# for it when one is given, so a path is never listed twice. Written to a new
+	# file and renamed over the old one, never through a name chosen in advance.
+	ai_manifest_set() {
+	    ai_mkdir "$(dirname "$AI_MANIFEST")" || return 1
+	    _m="$(mktemp "$AI_MANIFEST.XXXXXX" 2> /dev/null)" || return 1
+	    if {
+	        if [ -f "$AI_MANIFEST" ]; then
+	            AI_P="$1" awk '{ l = $0; sub(/^[^ ]*  /, "", l); if (l != ENVIRON["AI_P"]) print }' "$AI_MANIFEST"
+	        fi
+	        [ -z "${2:-}" ] || printf '%s  %s\n' "$2" "$1"
+	    } > "$_m" && mv -f "$_m" "$AI_MANIFEST"; then
+	        return 0
+	    fi
+	    rm -f "$_m"
+	    return 1
+	}
+
+	# The only places a file of the manifest may be: anything else in it was not
+	# written by the installer, whoever put it there.
+	ai_is_managed_path() {
+	    case "$1" in
+	        */../*|*/..|*/./*|*/.) return 1 ;;
+	    esac
+	    _rel="${1#"$AI_HOME"/}"
+	    [ "$_rel" != "$1" ] || return 1
+	    case "$_rel" in
+	        .claude/skills/?*|.agents/skills/?*) return 0 ;;
+	    esac
+	    return 1
+	}
+
+	# ai_put <source file> <destination>: writes the destination unless it is a
+	# file this installer did not write, or one the user changed since. Returns 1
+	# only when writing failed.
+	ai_put() {
+	    _new="$(ai_hash "$1")"
+	    _old="$(ai_manifest_hash "$2")"
+	    if [ -L "$2" ]; then
+	        warn "$2 is a symlink: left in place."
+	        return 0
+	    fi
+	    if [ -e "$2" ]; then
+	        if [ -z "$_old" ]; then
+	            warn "$2 exists and was not installed by Mosaico: left in place."
+	            return 0
+	        fi
+	        _cur="$(ai_hash "$2")"
+	        if [ "$_cur" != "$_old" ]; then
+	            warn "$2 was changed since Mosaico installed it: left in place, not updated."
+	            AI_MANAGED=$((AI_MANAGED + 1))
+	            return 0
+	        fi
+	        if [ "$_cur" = "$_new" ]; then
+	            echo "  ${DIM}unchanged${RESET} $2"
+	            AI_MANAGED=$((AI_MANAGED + 1))
+	            return 0
+	        fi
+	    fi
+	    if is_dry_run; then
+	        echo "  ${DIM}(dry-run)${RESET} write $2"
+	        return 0
+	    fi
+	    if ! ai_mkdir "$(dirname "$2")" || ! cp "$1" "$2" 2> /dev/null; then
+	        warn "could not write $2."
+	        return 1
+	    fi
+	    if ! ai_manifest_set "$2" "$_new"; then
+	        warn "could not record $2 in $AI_MANIFEST."
+	        return 1
+	    fi
+	    AI_MANAGED=$((AI_MANAGED + 1))
+	    echo "  wrote $2"
+	}
+
+	# Every skill of the bundle into both folders. Symlinks in the bundle are never
+	# followed.
+	ai_install() {
+	    for _base in "$AI_HOME/.claude/skills" "$AI_HOME/.agents/skills"; do
+	        for _sdir in "$AI_SOURCE_DIR"/skills/*/; do
+	            _sdir="${_sdir%/}"
+	            [ -L "$_sdir" ] && continue
+	            [ -f "$_sdir/SKILL.md" ] && [ ! -L "$_sdir/SKILL.md" ] || continue
+	            _sname="$(basename "$_sdir")"
+	            # Regular files only, one per line: find reports a symlink as one and
+	            # does not descend into a symlinked directory.
+	            _ifs="$IFS"
+	            IFS='
+	'
+	            set -f
+	            for _f in $(cd "$_sdir" && find . -type f); do
+	                IFS="$_ifs"
+	                set +f
+	                _f="${_f#./}"
+	                case "$_f" in
+	                    ..|../*|*/../*) continue ;;
+	                esac
+	                ai_put "$_sdir/$_f" "$_base/$_sname/$_f" || AI_FAILED=1
+	            done
+	            IFS="$_ifs"
+	            set +f
+	        done
+	    done
+	}
+
+	# Deletes empty directories from <dir> upwards, stopping at the skills folder
+	# itself, which may hold files that are not Mosaico's.
+	ai_prune_dirs() {
+	    _d="$1"
+	    while [ "$_d" != "$AI_HOME" ] && [ "$_d" != "/" ]; do
+	        case "$(basename "$_d")" in
+	            skills) break ;;
+	        esac
+	        rmdir "$_d" 2> /dev/null || break
+	        _d="$(dirname "$_d")"
+	    done
+	}
+
+	ai_remove() {
+	    if [ ! -f "$AI_MANIFEST" ]; then
+	        echo "${BRAND}Info:${RESET} nothing to remove: $AI_MANIFEST does not exist."
+	        return 0
+	    fi
+	    # Read from a copy, so the manifest can go at the end whatever happens.
+	    _copy="$(mktemp 2> /dev/null || mktemp -t mosaico-ai)" || return 1
+	    cat "$AI_MANIFEST" > "$_copy" || { rm -f "$_copy"; return 1; }
+	    while IFS= read -r _line; do
+	        _h="${_line%%  *}"
+	        _p="${_line#*  }"
+	        [ -n "$_p" ] || continue
+	        if ! ai_is_managed_path "$_p"; then
+	            warn "$_p is not in a folder the installer writes to: refused, left in place."
+	            continue
+	        fi
+	        if [ -L "$_p" ] || { [ -e "$_p" ] && [ "$(ai_hash "$_p")" != "$_h" ]; }; then
+	            warn "$_p was changed since Mosaico installed it: left in place."
+	            continue
+	        fi
+	        if is_dry_run; then
+	            [ -e "$_p" ] && echo "  ${DIM}(dry-run)${RESET} rm $_p"
+	            continue
+	        fi
+	        if [ -e "$_p" ]; then
+	            if ! rm -f "$_p" 2> /dev/null; then
+	                warn "could not remove $_p."
+	                AI_FAILED=1
+	                continue
+	            fi
+	            echo "  removed $_p"
+	        fi
+	        ai_prune_dirs "$(dirname "$_p")"
+	    done < "$_copy"
+	    rm -f "$_copy"
+	    if is_dry_run; then
+	        echo "  ${DIM}(dry-run)${RESET} rm $AI_MANIFEST"
+	    else
+	        rm -f "$AI_MANIFEST"
+	        # Only when empty: on macOS it is the installation's own data directory.
+	        rmdir "$(dirname "$AI_MANIFEST")" 2> /dev/null || true
+	    fi
+	}
+
+	# Skills, or files of a skill, that Mosaico no longer ships: the manifest lists
+	# them, the bundle just installed does not. Deleted on the same condition as
+	# --remove; a file the user changed stays where it is and leaves the manifest,
+	# so from then on it is theirs. Run only after an install with no failure, so a
+	# bad download never empties the folders.
+	ai_prune_stale() {
+	    [ -f "$AI_MANIFEST" ] || return 0
+	    _copy="$(mktemp 2> /dev/null || mktemp -t mosaico-ai)" || return 1
+	    cat "$AI_MANIFEST" > "$_copy" || { rm -f "$_copy"; return 1; }
+	    while IFS= read -r _line; do
+	        _h="${_line%%  *}"
+	        _p="${_line#*  }"
+	        [ -n "$_p" ] || continue
+	        ai_is_managed_path "$_p" || continue
+	        _rest="${_p#"$AI_HOME"/}"
+	        _rest="${_rest#.claude/skills/}"
+	        _rest="${_rest#.agents/skills/}"
+	        _src="$AI_SOURCE_DIR/skills/$_rest"
+	        _sdir="$AI_SOURCE_DIR/skills/${_rest%%/*}"
+	        # Still shipped, by the same test ai_install uses to copy it.
+	        if [ -f "$_src" ] && [ ! -L "$_src" ] && [ ! -L "$_sdir" ] \
+	            && [ -f "$_sdir/SKILL.md" ] && [ ! -L "$_sdir/SKILL.md" ]; then
+	            continue
+	        fi
+	        if [ -L "$_p" ] || { [ -e "$_p" ] && [ "$(ai_hash "$_p")" != "$_h" ]; }; then
+	            warn "$_p is no longer part of the Mosaico skills and was changed since Mosaico installed it: left in place, no longer managed."
+	        elif is_dry_run; then
+	            [ -e "$_p" ] && echo "  ${DIM}(dry-run)${RESET} rm $_p (no longer shipped)"
+	        elif [ -e "$_p" ]; then
+	            if ! rm -f "$_p" 2> /dev/null; then
+	                warn "could not remove $_p."
+	                AI_FAILED=1
+	                continue
+	            fi
+	            echo "  removed $_p (no longer shipped)"
+	            ai_prune_dirs "$(dirname "$_p")"
+	        fi
+	        is_dry_run && continue
+	        if ! ai_manifest_set "$_p"; then
+	            warn "could not update $AI_MANIFEST."
+	            AI_FAILED=1
+	        fi
+	    done < "$_copy"
+	    rm -f "$_copy"
+	}
+
+	# The content hash AI_SKILLS_SHA256 is checked against, printed for the
+	# installer: one "<sha256>  <path>" line for every regular file under skills/,
+	# its path relative to AI_SOURCE_DIR, the lines sorted bytewise, and the sha256
+	# of that list. Refused first, with nothing printed, when anything under
+	# skills/ is not a directory or a regular file (a symlink, a device, a FIFO),
+	# or has a newline in its name, for which that list is not well defined.
+	ai_verify() {
+	    cd "$AI_SOURCE_DIR" || return 1
+	    if ! command -v sha256sum > /dev/null 2>&1 && ! command -v shasum > /dev/null 2>&1; then
+	        warn "neither sha256sum nor shasum is installed, so the skills cannot be checked."
+	        return 1
+	    fi
+	    _bad="$(find skills ! -type f ! -type d | head -n 1)"
+	    if [ -n "$_bad" ]; then
+	        warn "$AI_SOURCE_DIR/$_bad is neither a directory nor a regular file."
+	        return 1
+	    fi
+	    _nl='
+	'
+	    if [ -n "$(find skills -name "*$_nl*" | head -n 1)" ]; then
+	        warn "a name under $AI_SOURCE_DIR/skills has a newline in it."
+	        return 1
+	    fi
+	    find skills -type f | LC_ALL=C sort | while IFS= read -r _f; do
+	        printf '%s  %s\n' "$(ai_hash_stdin < "$_f")" "$_f"
+	    done | ai_hash_stdin
+	}
+
+	case "$AI_MODE" in
+	    verify)
+	        ai_verify || exit 11
+	        exit 10
+	        ;;
+	    install)
+	        ai_install || AI_FAILED=1
+	        [ "$AI_FAILED" -ne 0 ] || ai_prune_stale || AI_FAILED=1
+	        _none=0
+	        [ "$AI_MANAGED" -gt 0 ] || _none=2
+	        exit $((10 + AI_FAILED + _none))
+	        ;;
+	    remove)
+	        ai_remove || AI_FAILED=1
+	        exit $((10 + AI_FAILED))
+	        ;;
+	esac
+	exit 14
+	AI_WORKER_EOF
+}
+
+# ai_as_user <command> [arg...]: runs a command as AI_USER, with TMPDIR set back to
+# /tmp (see ai_make_tmp). Its status is the command's, or the 1 or 126 of a
+# runuser, sudo or su that refused to run it.
+ai_as_user() {
+	if [ "$(id -u)" -ne 0 ]; then
+		"$@"
+	elif command_exists runuser; then
+		runuser -u "$AI_USER" -- env TMPDIR=/tmp "$@"
+	elif command_exists sudo; then
+		sudo -u "$AI_USER" -H env TMPDIR=/tmp "$@"
+	else
+		_cmd="env TMPDIR=/tmp"
+		for _a in "$@"; do
+			_cmd="$_cmd $(ai_quote "$_a")"
+		done
+		su -s /bin/sh "$AI_USER" -c "$_cmd"
+	fi
+}
+
+# ai_run_worker <install|remove>: writes the worker and its parameters
+# into AI_TMP and runs it as AI_USER. Its status is the worker's, or
+# that of a launcher that refused to run it (see ai_as_user).
+ai_run_worker() {
+	_mode="$1"
+	ai_write_worker > "$AI_TMP/ai-worker.sh" || return 3
+	{
+		echo "AI_MODE=$(ai_quote "$_mode")"
+		echo "AI_DRY_RUN=$(ai_quote "$DRY_RUN")"
+		echo "AI_HOME=$(ai_quote "$AI_HOME")"
+		echo "AI_MANIFEST=$(ai_quote "$AI_MANIFEST")"
+		echo "AI_SOURCE_DIR=$(ai_quote "$AI_SOURCE_DIR")"
+		echo "DIM=$(ai_quote "$DIM")"
+		echo "RESET=$(ai_quote "$RESET")"
+		echo "YELLOW=$(ai_quote "$YELLOW")"
+		echo "BRAND=$(ai_quote "$BRAND")"
+	} > "$AI_TMP/ai-params.sh" || return 3
+	# For AI_USER, who gets into AI_TMP through ai_make_tmp: nothing else in it is
+	# opened up, and the skills under src/ are that user's own already.
+	chmod 644 "$AI_TMP/ai-worker.sh" "$AI_TMP/ai-params.sh" 2>> "$LOG_FILE" || return 3
+	ai_as_user sh "$AI_TMP/ai-worker.sh"
+}
+
+# Not fatal in a full installation: the skills are an extra, and neither a
+# download nor a file that fails says anything about the installation itself.
+# For --ai alone (AI_ONLY) they are the whole run, so a failure exits 1; skills
+# not released yet exit 0.
+install_ai() {
+	[ "$AI" -eq 1 ] || return 0
+
+	step_line "Installing Mosaico skills for AI coding assistants"
+	if ! ai_released; then
+		info "Mosaico's skills for AI coding assistants are not released yet: none were installed. Re-run with --ai once they are."
+		return 0
+	fi
+	if [ "$AI_ONLY" -eq 0 ] && ! ai_version_supported; then
+		warn "Mosaico's skills are written for Mosaico $AI_MIN_MOSAICO_VERSION or newer, and this run is for $MOSAICO_VERSION: skipped, since they would describe commands and options it does not have. Once you run $AI_MIN_MOSAICO_VERSION or newer, add them with: mosaicoctl --ai"
+		return 0
+	fi
+	if ! ai_resolve_user; then
+		if [ -z "$AI_USER" ]; then
+			warn "running as root with no SUDO_USER, so there is no user home to install the Mosaico skills into: skipped. Run the installer with sudo from your own account."
+		else
+			[ "$AI_ONLY" -eq 0 ] || fatal "found no home directory for $AI_USER: no skills were installed."
+			warn "found no home directory for $AI_USER: skipped."
+		fi
+		return 0
+	fi
+	echo "  User            : $AI_USER ($AI_HOME)"
+	echo "  Folders         : ~/.claude/skills, ~/.agents/skills"
+	_rc=0
+	ai_fetch_bundle || _rc=$?
+	if [ "$_rc" -ne 0 ]; then
+		ai_cleanup_tmp
+		if [ "$_rc" -eq 2 ]; then
+			[ "$AI_ONLY" -eq 0 ] || fatal "$AI_SOURCE_LABEL has no .agents/skills folder: no skills to install."
+			warn "$AI_SOURCE_LABEL has no .agents/skills folder: no skills to install."
+		elif [ "$_rc" -eq 3 ]; then
+			_msg="$AI_REFUSAL Refused: none were installed."
+			[ "$AI_ONLY" -eq 0 ] || fatal "$_msg"
+			printf "${RED}Error:${RESET} %s The rest of the installation goes on.\n" "$_msg" >&2
+		elif [ "$_rc" -eq 4 ]; then
+			[ "$AI_ONLY" -eq 0 ] || fatal "the archive downloaded from $AI_SOURCE_LABEL cannot be read, being damaged or cut short (see $LOG_FILE): none were installed."
+			warn "the archive downloaded from $AI_SOURCE_LABEL cannot be read, being damaged or cut short (see $LOG_FILE): skipped."
+		elif [ "$_rc" -eq 5 ]; then
+			[ "$AI_ONLY" -eq 0 ] || fatal "the skills from $AI_SOURCE_LABEL were fetched, but their check could not run as $AI_USER (see $LOG_FILE): none were installed."
+			warn "the skills from $AI_SOURCE_LABEL were fetched, but their check could not run as $AI_USER (see $LOG_FILE): skipped."
+		else
+			[ "$AI_ONLY" -eq 0 ] || fatal "could not fetch the skills from $AI_SOURCE_LABEL (see $LOG_FILE): none were installed."
+			warn "could not fetch the skills from $AI_SOURCE_LABEL (see $LOG_FILE): skipped."
+		fi
+		return 0
+	fi
+	echo "  Source          : $AI_SOURCE_LABEL"
+	_rc=0
+	ai_run_worker install || _rc=$?
+	ai_cleanup_tmp
+	# The worker's own codes: 10 and 11, files are in place; 12 and 13, none are; 11
+	# and 13, some failed. Anything else means it never ran, or not to the end.
+	case "$_rc" in
+		10|12) ;;
+		11|13)
+			[ "$AI_ONLY" -eq 0 ] || fatal "some skill files could not be written: see the warnings above."
+			warn "some skill files could not be written: see the warnings above. The rest of the installation goes on."
+			;;
+		*)
+			[ "$AI_ONLY" -eq 0 ] || fatal "the AI step could not run as $AI_USER (status $_rc): no skills were installed."
+			warn "the AI step could not run as $AI_USER (status $_rc): no skills were installed. The rest of the installation goes on."
+			;;
+	esac
+	if ! is_dry_run && { [ "$_rc" -eq 10 ] || [ "$_rc" -eq 11 ]; }; then
+		AI_INSTALLED=1
+	fi
+}
+
+do_ai_remove() {
+	step_line "Removing Mosaico skills for AI coding assistants"
+	if ! ai_resolve_user; then
+		if [ -z "$AI_USER" ]; then
+			warn "running as root with no SUDO_USER, so there is no user home to remove the Mosaico skills from. Run it with sudo from your own account."
+		else
+			warn "found no home directory for $AI_USER: skipped."
+		fi
+		return 0
+	fi
+	# Whether there is a manifest is the worker's to find out: root may not be able
+	# to look, on a home mounted over NFS with root_squash.
+	ai_make_tmp || fatal "could not create a temporary directory under /tmp."
+	_rc=0
+	ai_run_worker remove || _rc=$?
+	ai_cleanup_tmp
+	case "$_rc" in
+		10) ;;
+		11) warn "some skill files could not be removed: see the warnings above." ;;
+		*) warn "the AI step could not run as $AI_USER (status $_rc): nothing was removed." ;;
+	esac
+}
+
+# --ai with no option that installs Mosaico: the skills and nothing else, so no
+# daemon, no Podman, no prompt. Under sudo the files are still written by
+# $SUDO_USER, as in install_ai.
+do_ai_only() {
+	print_logo
+	echo
+	if [ "$MOSAICO_VERSION_SET" -eq 0 ] && ai_released; then
+		info "the skills are written for Mosaico $AI_MIN_MOSAICO_VERSION or newer (the main branch); the daemon you use them with is not checked. To check it, give its version, without sudo: curl -fsSL https://get.mosaico.dev | MOSAICO_VERSION=$AI_MIN_MOSAICO_VERSION sh -s -- --ai"
+	fi
+	is_dry_run && echo "${YELLOW}# --dry-run: no changes will be made${RESET}"
+	install_ai
+	if [ "$AI_INSTALLED" -eq 1 ]; then
+		echo
+		echo "  Mosaico skills for your AI coding assistants, listed in:"
+		echo "    $AI_MANIFEST"
+		echo "  ${DIM}Remove them with: curl -fsSL https://get.mosaico.dev | sh -s -- --ai --remove${RESET}"
+	fi
+	echo
+}
+
 # --- Uninstall ---
 
 # Reads a single key from the install record. `grep -s` keeps a missing file quiet,
@@ -2641,6 +3529,16 @@ do_uninstall() {
 		echo "  Dataset frames stored in the object store bucket are not touched by"
 		echo "  these commands and must be removed there."
 	fi
+	# Not removed with Mosaico: they are of use without a local daemon, and
+	# --ai --remove takes them away on its own.
+	# Looked for as the user, for the same reason as in do_ai_remove.
+	if ai_resolve_user && ai_as_user test -f "$AI_MANIFEST" 2>/dev/null; then
+		echo "  The Mosaico skills installed for your AI coding assistants were left"
+		echo "  in place. Remove them with:"
+		echo
+		echo "${BOLD}    curl -fsSL https://get.mosaico.dev | sh -s -- --ai --remove${RESET}"
+		echo
+	fi
 	echo
 }
 
@@ -2718,6 +3616,13 @@ print_success() {
 		echo "    ${BOLD}. $SDK_VENV/bin/activate${RESET}"
 	fi
 
+	if [ "$AI_INSTALLED" -eq 1 ]; then
+		echo
+		echo "  Mosaico skills for your AI coding assistants, listed in:"
+		echo "    $AI_MANIFEST"
+		echo "  ${DIM}Remove them with: curl -fsSL https://get.mosaico.dev | sh -s -- --ai --remove${RESET}"
+	fi
+
 	echo
 	if [ "$MAN_PAGE_INSTALLED" -eq 1 ]; then
 		echo "  Installed commands, file locations and how to uninstall:"
@@ -2784,6 +3689,7 @@ do_install() {
 	# After the service exists: the hook restarts it.
 	install_renewal_hook
 	install_sdk
+	install_ai
 	install_mosaicoctl
 	install_man_page
 
@@ -2802,7 +3708,11 @@ apply_pairings
 setup_sh_c
 validate_flags
 
-if [ "$UNINSTALL" -eq 1 ]; then
+if [ "$AI_REMOVE" -eq 1 ]; then
+	do_ai_remove
+elif [ "$AI_ONLY" -eq 1 ]; then
+	do_ai_only
+elif [ "$UNINSTALL" -eq 1 ]; then
 	do_uninstall
 else
 	do_install
