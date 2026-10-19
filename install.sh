@@ -1755,7 +1755,7 @@ check_python() {
 
 	# A present python3 does not imply a usable venv module: see the apt note in
 	# install_python_packages.
-	if ! python3 -m venv --help >/dev/null 2>&1; then
+	if ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
 		step_ok "venv module missing, installing"
 		install_python_packages
 		return
@@ -1780,7 +1780,7 @@ install_sdk() {
 	# Created only when absent, so a re-run keeps whatever else was pip installed
 	# into it; --upgrade is then what actually updates the SDK, since a plain install
 	# would report the requirement as already satisfied.
-	if ! as_root_capture "test -x $SDK_VENV/bin/python && echo yes" | grep -q '^yes$'; then
+	if ! as_root_capture "test -x $SDK_VENV/bin/pip && echo yes" | grep -q '^yes$'; then
 		as_root "python3 -m venv $SDK_VENV"
 	fi
 	as_root "$SDK_VENV/bin/pip install --quiet --upgrade pip"
