@@ -223,7 +223,7 @@ set -e
 # Python 3.10 or newer. Activate it with `. ~/.mosaico/sdk/bin/activate`.
 #
 # --version <VERSION>
-# Image tag to install. The default is 0.6.0-rc.
+# Image tag to install. The default is latest.
 # Anything below 0.6 is refused outright rather than installed.
 # `latest` is accepted as given, and so is a commit sha
 # (`sha-<hex>`, or the bare hex): neither can be resolved to a number without
@@ -305,9 +305,8 @@ TLS_CERT_IN_CONTAINER="/certs/cert.pem"
 TLS_KEY_IN_CONTAINER="/certs/key.pem"
 # Pinned: the generated command lines and environment keys belong to one mosaicod
 # release. Change this together with the flags in run_mosaicod, run_cleanup and
-# the keys in write_secrets, never independently. `latest` is still 0.5.x, which
-# has no `server` and no `cleanup` subcommand.
-DEFAULT_MOSAICO_VERSION="0.6.0-rc"
+# the keys in write_secrets, never independently.
+DEFAULT_MOSAICO_VERSION="latest"
 MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
 # The oldest release this installer can set up, checked against --version. Kept
 # apart from DEFAULT_MOSAICO_VERSION on purpose: the default moves with every
