@@ -1310,7 +1310,7 @@ configure_interactive() {
 	# talk to a daemon that enforces them.
 	section "[4/6] Security & API Keys"
 	if [ "$API_KEY_SET" -eq 0 ]; then
-		if ask_yn "Do you want to generate an initial Master API Key for clients?" "y"; then
+		if ask_yn "Do you want to generate an initial Master API Key for clients?" "n"; then
 			API_KEY=1
 		else
 			API_KEY=0
