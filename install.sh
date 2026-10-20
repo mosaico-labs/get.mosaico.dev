@@ -1544,7 +1544,7 @@ sh_c="eval"
 setup_sh_c() {
 	if [ "$user" != "root" ]; then
 		if command_exists sudo; then
-			sh_c="sudo -E sh -c"
+			sh_c="sudo sh -c"
 		elif command_exists su; then
 			sh_c="su -c"
 		else
