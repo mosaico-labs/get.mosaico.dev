@@ -1821,12 +1821,16 @@ MOSAICOD_STORE_ACCESS_KEY=$OBJ_ACCESS_KEY
 MOSAICOD_STORE_SECRET_KEY=$OBJ_SECRET_KEY"
 	fi
 
-	# TLS is switched on by --tls on the daemon's command line; these two keys only
-	# say where the material is, in container paths.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		env_body="$env_body
+MOSAICOD_TLS_ENABLED=true
 MOSAICOD_TLS_CERT_FILE=$TLS_CERT_IN_CONTAINER
 MOSAICOD_TLS_PRIVATE_KEY_FILE=$TLS_KEY_IN_CONTAINER"
+	fi
+
+	if [ "$API_KEY" -eq 1 ]; then
+		env_body="$env_body
+MOSAICOD_API_KEY_ENABLED=true"
 	fi
 
 	# No cleanup keys: the routine is configured by the flags run_cleanup passes,
@@ -2053,12 +2057,9 @@ run_mosaicod() {
 	# mandatory and is not $MOSAICOD_HOST: mosaicod binds the loopback by default, and
 	# a published port is DNAT'd to the container's address, which a process on
 	# 127.0.0.1 inside it never sees. What the operator chose is the host side of the
-	# -p mapping below. --tls and --api-key are switches, not configuration keys:
-	# without them the daemon ignores the TLS material and the keys in the environment
-	# file.
+	# -p mapping below. TLS and API key authentication are enabled via environment
+	# variables in the env file (MOSAICOD_TLS_ENABLED, MOSAICOD_API_KEY_ENABLED).
 	_exec_args="server --host 0.0.0.0 --port $MOSAICOD_PORT"
-	[ "$ENABLE_TLS" -eq 1 ] && _exec_args="$_exec_args --tls"
-	[ "$API_KEY" -eq 1 ] && _exec_args="$_exec_args --api-key"
 
 	_mounts=""
 	[ "$STORE_BACKEND" = "fs" ] && _mounts="$_mounts -v '$FS_DIR':/data"

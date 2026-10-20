@@ -1994,12 +1994,16 @@ MOSAICOD_STORE_ACCESS_KEY=$OBJ_ACCESS_KEY
 MOSAICOD_STORE_SECRET_KEY=$OBJ_SECRET_KEY"
 	fi
 
-	# TLS is switched on by --tls on the command line; these two keys only say where
-	# the material is, in container paths.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		env_body="$env_body
+MOSAICOD_TLS_ENABLED=true
 MOSAICOD_TLS_CERT_FILE=$TLS_CERT_IN_CONTAINER
 MOSAICOD_TLS_PRIVATE_KEY_FILE=$TLS_KEY_IN_CONTAINER"
+	fi
+
+	if [ "$API_KEY" -eq 1 ]; then
+		env_body="$env_body
+MOSAICOD_API_KEY_ENABLED=true"
 	fi
 
 	# No cleanup keys: the routine is configured by the flags on the mosaico-cleanup
@@ -2094,12 +2098,9 @@ write_quadlets() {
 	# mandatory and is not $MOSAICOD_HOST: mosaicod binds the loopback by default, and
 	# rootful Podman publishes a port by DNAT'ing it to the container's address, which
 	# a process on 127.0.0.1 inside it never sees. What the operator chose is the host
-	# side of PublishPort below. --tls and --api-key are switches, not configuration
-	# keys: without them the daemon ignores the TLS material and the keys in the env
-	# file.
+	# side of PublishPort below. TLS and API key authentication are enabled via
+	# environment variables in the env file (MOSAICOD_TLS_ENABLED, MOSAICOD_API_KEY_ENABLED).
 	exec_args="server --host 0.0.0.0 --port $MOSAICOD_PORT"
-	[ "$ENABLE_TLS" -eq 1 ] && exec_args="$exec_args --tls"
-	[ "$API_KEY" -eq 1 ] && exec_args="$exec_args --api-key"
 
 	container="[Container]
 Exec=$exec_args
