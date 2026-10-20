@@ -1975,9 +1975,13 @@ write_secrets() {
 		POSTGRES_PASSWORD=$password
 		EOF
 
-		env_body="MOSAICOD_DB_URL=postgresql://mosaico:$password@mosaico-postgres:5432/mosaico"
+		env_body="MOSAICOD_DB_URL=postgresql://mosaico-postgres:5432/mosaico
+MOSAICOD_DB_USER=mosaico
+MOSAICOD_DB_PASSWORD=$password"
 	else
-		env_body="MOSAICOD_DB_URL=postgresql://$(urlencode "$PG_USER"):$(urlencode "$PG_PASSWORD")@$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")"
+		env_body="MOSAICOD_DB_URL=postgresql://$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")
+MOSAICOD_DB_USER=$(urlencode "$PG_USER")
+MOSAICOD_DB_PASSWORD=$(urlencode "$PG_PASSWORD")"
 	fi
 
 	# There is no backend key: mosaicod derives it from the endpoint scheme, so a
