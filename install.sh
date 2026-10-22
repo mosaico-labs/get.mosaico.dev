@@ -237,7 +237,7 @@ set -e
 #
 #   $ sudo sh install-mosaico.sh --version 0.6.0
 #
-# Image tag to install. The default is 0.6.0-rc.
+# Image tag to install. The default is latest.
 # Anything below 0.6 is refused outright rather than installed.
 # `latest` is accepted as given, and so is a commit sha
 # (`sha-<hex>`, or the bare hex): neither can be resolved to a number without
@@ -287,9 +287,8 @@ RENEWAL_HOOK_DIR="$LE_DIR/renewal-hooks/deploy"
 RENEWAL_HOOK="$RENEWAL_HOOK_DIR/mosaico.sh"
 # Pinned: the generated command lines and environment keys belong to one mosaicod
 # release. Change this together with the flags in write_quadlets and the keys in
-# write_secrets, never independently. `latest` is still 0.5.x, which has no
-# `server` and no `cleanup` subcommand.
-DEFAULT_MOSAICO_VERSION="0.6.0-rc"
+# write_secrets, never independently.
+DEFAULT_MOSAICO_VERSION="latest"
 MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
 # The oldest release this installer can set up, checked against --version. Kept
 # apart from DEFAULT_MOSAICO_VERSION on purpose: the default moves with every
@@ -1352,7 +1351,7 @@ configure_interactive() {
 	# talk to a daemon that enforces them.
 	section "[4/6] Security & API Keys"
 	if [ "$API_KEY_SET" -eq 0 ]; then
-		if ask_yn "Do you want to generate an initial Master API Key for clients?" "y"; then
+		if ask_yn "Do you want to generate an initial Master API Key for clients?" "n"; then
 			API_KEY=1
 		else
 			API_KEY=0
@@ -1544,7 +1543,7 @@ sh_c="eval"
 setup_sh_c() {
 	if [ "$user" != "root" ]; then
 		if command_exists sudo; then
-			sh_c="sudo -E sh -c"
+			sh_c="sudo sh -c"
 		elif command_exists su; then
 			sh_c="su -c"
 		else
@@ -1755,7 +1754,7 @@ check_python() {
 
 	# A present python3 does not imply a usable venv module: see the apt note in
 	# install_python_packages.
-	if ! python3 -m venv --help >/dev/null 2>&1; then
+	if ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
 		step_ok "venv module missing, installing"
 		install_python_packages
 		return
@@ -1780,7 +1779,7 @@ install_sdk() {
 	# Created only when absent, so a re-run keeps whatever else was pip installed
 	# into it; --upgrade is then what actually updates the SDK, since a plain install
 	# would report the requirement as already satisfied.
-	if ! as_root_capture "test -x $SDK_VENV/bin/python && echo yes" | grep -q '^yes$'; then
+	if ! as_root_capture "test -x $SDK_VENV/bin/pip && echo yes" | grep -q '^yes$'; then
 		as_root "python3 -m venv $SDK_VENV"
 	fi
 	as_root "$SDK_VENV/bin/pip install --quiet --upgrade pip"
@@ -1976,9 +1975,13 @@ write_secrets() {
 		POSTGRES_PASSWORD=$password
 		EOF
 
-		env_body="MOSAICOD_DB_URL=postgresql://mosaico:$password@mosaico-postgres:5432/mosaico"
+		env_body="MOSAICOD_DB_URL=postgresql://mosaico-postgres:5432/mosaico
+MOSAICOD_DB_USER=mosaico
+MOSAICOD_DB_PASSWORD=$password"
 	else
-		env_body="MOSAICOD_DB_URL=postgresql://$(urlencode "$PG_USER"):$(urlencode "$PG_PASSWORD")@$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")"
+		env_body="MOSAICOD_DB_URL=postgresql://$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")
+MOSAICOD_DB_USER=$(urlencode "$PG_USER")
+MOSAICOD_DB_PASSWORD=$(urlencode "$PG_PASSWORD")"
 	fi
 
 	# There is no backend key: mosaicod derives it from the endpoint scheme, so a
@@ -1995,12 +1998,16 @@ MOSAICOD_STORE_ACCESS_KEY=$OBJ_ACCESS_KEY
 MOSAICOD_STORE_SECRET_KEY=$OBJ_SECRET_KEY"
 	fi
 
-	# TLS is switched on by --tls on the command line; these two keys only say where
-	# the material is, in container paths.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		env_body="$env_body
+MOSAICOD_TLS_ENABLED=true
 MOSAICOD_TLS_CERT_FILE=$TLS_CERT_IN_CONTAINER
 MOSAICOD_TLS_PRIVATE_KEY_FILE=$TLS_KEY_IN_CONTAINER"
+	fi
+
+	if [ "$API_KEY" -eq 1 ]; then
+		env_body="$env_body
+MOSAICOD_API_KEY_ENABLED=true"
 	fi
 
 	# No cleanup keys: the routine is configured by the flags on the mosaico-cleanup
@@ -2095,12 +2102,9 @@ write_quadlets() {
 	# mandatory and is not $MOSAICOD_HOST: mosaicod binds the loopback by default, and
 	# rootful Podman publishes a port by DNAT'ing it to the container's address, which
 	# a process on 127.0.0.1 inside it never sees. What the operator chose is the host
-	# side of PublishPort below. --tls and --api-key are switches, not configuration
-	# keys: without them the daemon ignores the TLS material and the keys in the env
-	# file.
+	# side of PublishPort below. TLS and API key authentication are enabled via
+	# environment variables in the env file (MOSAICOD_TLS_ENABLED, MOSAICOD_API_KEY_ENABLED).
 	exec_args="server --host 0.0.0.0 --port $MOSAICOD_PORT"
-	[ "$ENABLE_TLS" -eq 1 ] && exec_args="$exec_args --tls"
-	[ "$API_KEY" -eq 1 ] && exec_args="$exec_args --api-key"
 
 	container="[Container]
 Exec=$exec_args

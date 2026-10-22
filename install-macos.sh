@@ -223,7 +223,7 @@ set -e
 # Python 3.10 or newer. Activate it with `. ~/.mosaico/sdk/bin/activate`.
 #
 # --version <VERSION>
-# Image tag to install. The default is 0.6.0-rc.
+# Image tag to install. The default is latest.
 # Anything below 0.6 is refused outright rather than installed.
 # `latest` is accepted as given, and so is a commit sha
 # (`sha-<hex>`, or the bare hex): neither can be resolved to a number without
@@ -305,9 +305,8 @@ TLS_CERT_IN_CONTAINER="/certs/cert.pem"
 TLS_KEY_IN_CONTAINER="/certs/key.pem"
 # Pinned: the generated command lines and environment keys belong to one mosaicod
 # release. Change this together with the flags in run_mosaicod, run_cleanup and
-# the keys in write_secrets, never independently. `latest` is still 0.5.x, which
-# has no `server` and no `cleanup` subcommand.
-DEFAULT_MOSAICO_VERSION="0.6.0-rc"
+# the keys in write_secrets, never independently.
+DEFAULT_MOSAICO_VERSION="latest"
 MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
 # The oldest release this installer can set up, checked against --version. Kept
 # apart from DEFAULT_MOSAICO_VERSION on purpose: the default moves with every
@@ -1311,7 +1310,7 @@ configure_interactive() {
 	# talk to a daemon that enforces them.
 	section "[4/6] Security & API Keys"
 	if [ "$API_KEY_SET" -eq 0 ]; then
-		if ask_yn "Do you want to generate an initial Master API Key for clients?" "y"; then
+		if ask_yn "Do you want to generate an initial Master API Key for clients?" "n"; then
 			API_KEY=1
 		else
 			API_KEY=0
@@ -1803,9 +1802,13 @@ write_secrets() {
 		EOF
 		)
 
-		env_body="MOSAICOD_DB_URL=postgresql://mosaico:$password@$POSTGRES_CONTAINER:5432/mosaico"
+		env_body="MOSAICOD_DB_URL=postgresql://$POSTGRES_CONTAINER:5432/mosaico
+MOSAICOD_DB_USER=mosaico
+MOSAICOD_DB_PASSWORD=$password"
 	else
-		env_body="MOSAICOD_DB_URL=postgresql://$(urlencode "$PG_USER"):$(urlencode "$PG_PASSWORD")@$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")"
+		env_body="MOSAICOD_DB_URL=postgresql://$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")
+MOSAICOD_DB_USER=$(urlencode "$PG_USER")
+MOSAICOD_DB_PASSWORD=$(urlencode "$PG_PASSWORD")"
 	fi
 
 	# There is no backend key: mosaicod derives it from the endpoint scheme. The
@@ -1822,12 +1825,16 @@ MOSAICOD_STORE_ACCESS_KEY=$OBJ_ACCESS_KEY
 MOSAICOD_STORE_SECRET_KEY=$OBJ_SECRET_KEY"
 	fi
 
-	# TLS is switched on by --tls on the daemon's command line; these two keys only
-	# say where the material is, in container paths.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		env_body="$env_body
+MOSAICOD_TLS_ENABLED=true
 MOSAICOD_TLS_CERT_FILE=$TLS_CERT_IN_CONTAINER
 MOSAICOD_TLS_PRIVATE_KEY_FILE=$TLS_KEY_IN_CONTAINER"
+	fi
+
+	if [ "$API_KEY" -eq 1 ]; then
+		env_body="$env_body
+MOSAICOD_API_KEY_ENABLED=true"
 	fi
 
 	# No cleanup keys: the routine is configured by the flags run_cleanup passes,
@@ -2054,12 +2061,9 @@ run_mosaicod() {
 	# mandatory and is not $MOSAICOD_HOST: mosaicod binds the loopback by default, and
 	# a published port is DNAT'd to the container's address, which a process on
 	# 127.0.0.1 inside it never sees. What the operator chose is the host side of the
-	# -p mapping below. --tls and --api-key are switches, not configuration keys:
-	# without them the daemon ignores the TLS material and the keys in the environment
-	# file.
+	# -p mapping below. TLS and API key authentication are enabled via environment
+	# variables in the env file (MOSAICOD_TLS_ENABLED, MOSAICOD_API_KEY_ENABLED).
 	_exec_args="server --host 0.0.0.0 --port $MOSAICOD_PORT"
-	[ "$ENABLE_TLS" -eq 1 ] && _exec_args="$_exec_args --tls"
-	[ "$API_KEY" -eq 1 ] && _exec_args="$_exec_args --api-key"
 
 	_mounts=""
 	[ "$STORE_BACKEND" = "fs" ] && _mounts="$_mounts -v '$FS_DIR':/data"
