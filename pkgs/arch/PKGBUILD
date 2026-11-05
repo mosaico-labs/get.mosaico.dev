@@ -85,7 +85,7 @@ package_python-mosaicolabs() {
         python-pyarrow
         python-pydantic
         python-rich
-        python-rosbags  # TODO: Not ready yet, the AUR package is still 0.9.19 and the SDK needs 0.11.x
+        python-rosbags
         python-typer
         python-typing_extensions
     )
