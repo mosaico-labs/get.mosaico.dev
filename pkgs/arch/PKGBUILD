@@ -96,7 +96,7 @@ package_python-mosaicolabs() {
     )
 
     python -m installer --destdir="$pkgdir" "$pkgbase"/mosaico-sdk-py/dist/*.whl
-    # TODO: Either add the testing module to the wheel or drop the testing command from the wheel
+    # TODO: The next release removes it upstream
     rm "$pkgdir/usr/bin/mosaicolabs.testing"
     install -Dm644 "$pkgbase/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
