@@ -90,11 +90,11 @@ package_python-mosaicolabs() {
         python-typing_extensions
     )
     optdepends=(
-        'python-mcap-protobuf-support: MCAP bridge'
+        'python-mcap-protobuf-support: MCAP bridge and its examples'
+        'python-mujoco: MuJoCo visualization example'
         'python-scikit-learn: scikit-learn base classes in mosaicolabs.ml'
     )
 
-    # TODO: Drop the examples from the wheel
     python -m installer --destdir="$pkgdir" "$pkgbase"/mosaico-sdk-py/dist/*.whl
     # TODO: Either add the testing module to the wheel or drop the testing command from the wheel
     rm "$pkgdir/usr/bin/mosaicolabs.testing"
