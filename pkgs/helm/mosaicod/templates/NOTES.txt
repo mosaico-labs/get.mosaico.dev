@@ -1,0 +1,23 @@
+{{- $config := include "mosaicod.config" . | fromJson -}}
+mosaicod listens on {{ .Release.Name }}.{{ .Release.Namespace }}.svc:6726.
+
+The pods read the database password and the store secret key from the
+{{ .Values.existingSecret }} Secret. If it doesn't exist yet:
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.existingSecret }} \
+    --from-literal=db-password=... --from-literal=store-secret-key=...
+
+mosaicod needs a PostgreSQL role and database before its first start, e.g.:
+  CREATE ROLE {{ dig "database" "user" "mosaico" $config }} LOGIN PASSWORD '...';
+  CREATE DATABASE mosaico OWNER {{ dig "database" "user" "mosaico" $config }};
+
+Every rollout stops all pods before starting new ones, because mosaicod
+migrates the database schema on startup.
+
+{{ if dig "server" "api_key_enabled" false $config -}}
+Create an API key with:
+{{- else -}}
+API keys are off, so anyone who can reach the service can read and write
+data. To require them, set api_key_enabled = true under [server] in config,
+upgrade the release and create a key:
+{{- end }}
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ .Release.Name }} -- mosaicod api-key create --permissions 'read|write|delete'

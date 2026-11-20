@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "mosaicod.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "mosaicod.labels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "mosaicod.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      annotations:
+        checksum/config: {{ .Values.config | sha256sum }}
+    spec:
+      {{- include "mosaicod.podSpec" . | nindent 6 }}
+      containers:
+        - name: mosaicod
+          {{- include "mosaicod.container" . | nindent 10 }}
+          args: [server, --host=0.0.0.0, --port=6726]
+          ports:
+            - name: grpc
+              containerPort: 6726
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+          {{- pick .Values "resources" | toYaml | nindent 10 }}

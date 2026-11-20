@@ -1,0 +1,10 @@
+{{- $_ := include "mosaicod.config" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "mosaicod.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    {{- .Values.config | nindent 4 }}

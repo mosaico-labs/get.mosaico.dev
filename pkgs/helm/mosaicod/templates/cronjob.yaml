@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name | trunc 44 }}-cleanup
+  labels:
+    {{- include "mosaicod.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cleanup
+spec:
+  schedule: {{ .Values.cleanup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "mosaicod.labels" . | nindent 12 }}
+            app.kubernetes.io/component: cleanup
+        spec:
+          restartPolicy: OnFailure
+          {{- include "mosaicod.podSpec" . | nindent 10 }}
+          containers:
+            - name: mosaicod
+              {{- include "mosaicod.container" . | nindent 14 }}
+              args: [cleanup, --time-interval=0]
+              {{- pick .Values.cleanup "resources" | toYaml | nindent 14 }}
